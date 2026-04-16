@@ -1,0 +1,82 @@
+services:
+  app:
+    build: .
+    container_name: talent-vault-app
+    env_file:
+      - .env
+    depends_on:
+      - mongodb
+      - postgres
+      - redis
+    volumes:
+      - ./src:/app/src
+    networks:
+      - talent-network
+
+  mongodb:
+    image: mongo:7
+    container_name: talent-vault-mongo
+    ports:
+      - "${MONGO_PORT:-27017}:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-admin}
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - talent-network
+
+  postgres:
+    image: postgres:16
+    container_name: talent-vault-postgres
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-talent_vault}
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - talent-network
+
+  redis:
+    image: redis:7
+    container_name: talent-vault-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - talent-network
+
+  api:
+    build: .
+    container_name: talent-vault-api
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    volumes:
+      - ./src:/app/src
+    networks:
+      - talent-network
+
+  prometheus:
+    image: prom/prometheus
+    container_name: talent-vault-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - talent-network
+
+volumes:
+  mongo-data:
+  postgres-data:
+
+networks:
+  talent-network:
+    driver: bridge
