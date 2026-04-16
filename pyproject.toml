@@ -1,0 +1,26 @@
+[project]
+name = "talent-vault"
+version = "0.1.0"
+description = "Real-time HR data pipeline: Kafka to MongoDB to PostgreSQL"
+requires-python = ">=3.12"
+dependencies = [
+    "confluent-kafka",
+    "pymongo",
+    "sqlalchemy",
+    "psycopg2-binary",
+    "redis",
+    "fastapi",
+    "uvicorn",
+    "loguru",
+    "prometheus-client",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "httpx",
+]
