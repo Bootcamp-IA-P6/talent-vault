@@ -1,0 +1,15 @@
+[project]
+name = "proyecto1m1v2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "confluent-kafka>=2.14.0",
+    "kafka-python-ng>=2.2.3",
+    "pandas>=3.0.2",
+    "psycopg2-binary>=2.9.11",
+    "pymongo>=4.16.0",
+    "python-dotenv>=1.2.2",
+    "sqlalchemy>=2.0.49",
+]
