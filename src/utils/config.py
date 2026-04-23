@@ -2,8 +2,8 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    kafka_bootstrap_servers: str = "localhost:9092"
-    kafka_topic: str = "hr-data"
+    kafka_bootstrap_servers: str = "localhost:29092"
+    kafka_topic: str = "testing"
     kafka_group_id: str = "talent-vault-consumer"
 
     mongo_host: str = "mongodb"
