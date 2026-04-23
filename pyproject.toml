@@ -16,6 +16,8 @@ dependencies = [
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
+    "kafka-python-ng>=2.2.0",
+    "faker>=40.15.0",
 ]
 
 [project.optional-dependencies]
@@ -24,3 +26,9 @@ dev = [
     "ruff",
     "httpx",
 ]
+
+[tool.ty.src]
+root = "."
+
+[tool.pyright]
+extraPaths = ["."]
