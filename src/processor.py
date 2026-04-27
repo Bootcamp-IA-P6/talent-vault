@@ -11,27 +11,37 @@ class DataProcessor:
         return name
 
     def clean_batch(self, batch):
+        """
+        Toma un lote de mensajes crudos, los limpia y los prepara.
+        """
+        # 1. PARCHE DE SEGURIDAD: 
+        # Antes de entrar en Pandas, convertimos cualquier lista en un valor simple.
+        # Esto evita el error 'unhashable type: list'.
+        for msg in batch:
+            for key, value in msg.items():
+                if isinstance(value, list):
+                    msg[key] = value[0] if len(value) > 0 else None
         df = pd.DataFrame(batch)
         df = df.drop_duplicates()
         df.columns = [self._to_snake_case(col) for col in df.columns]
 
-        # 1. Aseguramos que 'fullname' exista en el DataFrame antes de operar
+        # 2. Aseguramos que 'fullname' exista en el DataFrame antes de operar
         if 'fullname' not in df.columns:
             df['fullname'] = np.nan
 
-        # 2. Unificación de nombres
+        # 3. Unificación de nombres
         if 'name' in df.columns and 'last_name' in df.columns:
             mask = df['fullname'].isna() & df['name'].notna() & df['last_name'].notna()
             df.loc[mask, 'fullname'] = df['name'].astype(str) + " " + df['last_name'].astype(str)
 
-        # 3. Limpieza de Salario con conversión a número real
+        # 4. Limpieza de Salario con conversión a número real
         if 'salary' in df.columns:
             # Quitamos símbolos
             df['salary'] = df['salary'].replace(r'[^\d.]', '', regex=True)
             # Forzamos a que sea un número (si hay basura, pondrá NaN)
             df['salary'] = pd.to_numeric(df['salary'], errors='coerce')
 
-        # 4. Limpieza de strings
+        # 5. Limpieza de strings
         df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 
         # --- EL TRUCO SENIOR: Convertir NaNs en None ---
