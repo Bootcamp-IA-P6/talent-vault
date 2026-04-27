@@ -65,6 +65,19 @@ services:
       - postgres
     restart: always
 
+  frontend:
+    container_name: frontend
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - 8501:8501
+    environment:
+      API_BASE_URL: http://api:8000
+    depends_on:
+      - api
+    restart: always
+
   random_generator:
     container_name: random_generator
     build:

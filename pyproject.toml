@@ -18,6 +18,8 @@ dependencies = [
     "python-dotenv",
     "kafka-python-ng>=2.2.0",
     "faker>=40.15.0",
+    "streamlit>=1.38.0",
+    "requests>=2.32.0",
 ]
 
 [project.optional-dependencies]
