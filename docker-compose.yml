@@ -47,6 +47,24 @@ services:
       - postgres
     restart: always
 
+  api:
+    container_name: api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - 8000:8000
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-talent_vault}
+    depends_on:
+      - postgres
+    restart: always
+
   random_generator:
     container_name: random_generator
     build:
