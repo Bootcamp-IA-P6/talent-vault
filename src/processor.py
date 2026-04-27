@@ -1,30 +1,53 @@
 import pandas as pd
+import numpy as np # <--- Necesario para detectar los huecos
+import re
 
 class DataProcessor:
     def __init__(self):
-        # Aquí podríamos definir qué campos son obligatorios
-        self.required_keys = ['passport', 'fullname', 'iban', 'salary', 'ipv4']
+        self.required_fields = ['passport', 'fullname', 'iban', 'salary', 'city', 'ipv4']
+
+    def _to_snake_case(self, name):
+        name = str(name).lower().replace(" ", "_")
+        return name
 
     def clean_batch(self, batch):
-        """
-        Toma un lote de mensajes y los convierte en un DataFrame de Pandas
-        para poder limpiarlos y agruparlos fácilmente.
-        """
         df = pd.DataFrame(batch)
-        
-        # Ejemplo de limpieza simple: quitar espacios en blanco de los nombres
-        if 'fullname' in df.columns:
-            df['fullname'] = df['fullname'].str.strip()
-            
-        return df
+        df = df.drop_duplicates()
+        df.columns = [self._to_snake_case(col) for col in df.columns]
 
-    def merge_person_data(self, existing_data, new_piece):
+        # 1. Aseguramos que 'fullname' exista en el DataFrame antes de operar
+        if 'fullname' not in df.columns:
+            df['fullname'] = np.nan
+
+        # 2. Unificación de nombres
+        if 'name' in df.columns and 'last_name' in df.columns:
+            mask = df['fullname'].isna() & df['name'].notna() & df['last_name'].notna()
+            df.loc[mask, 'fullname'] = df['name'].astype(str) + " " + df['last_name'].astype(str)
+
+        # 3. Limpieza de Salario con conversión a número real
+        if 'salary' in df.columns:
+            # Quitamos símbolos
+            df['salary'] = df['salary'].replace(r'[^\d.]', '', regex=True)
+            # Forzamos a que sea un número (si hay basura, pondrá NaN)
+            df['salary'] = pd.to_numeric(df['salary'], errors='coerce')
+
+        # 4. Limpieza de strings
+        df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
+
+        # --- EL TRUCO SENIOR: Convertir NaNs en None ---
+        # Python 'None' es el vacío real que MongoDB y SQL entienden perfectamente.
+        # np.nan es un objeto molesto que da falsos positivos.
+        df = df.replace({np.nan: None})
+
+        return df.to_dict('records')
+
+    def is_complete(self, person_doc):
         """
-        Lógica para unir las piezas de la manzana.
-        Si ya tenemos algo de la persona, le sumamos la nueva pieza.
+        Verifica si el puzzle está completo y NO contiene 'nan' o 'None'
         """
-        # Esta lógica la perfeccionaremos en el siguiente paso
-        # Por ahora, solo piensa que 'existing_data' es lo que hay en Mongo
-        # y 'new_piece' es lo que acaba de llegar de Kafka.
-        combined = {**existing_data, **new_piece}
-        return combined
+        for field in self.required_fields:
+            val = person_doc.get(field)
+            # Si el valor es None, o es el string "nan", el puzzle no vale.
+            if val is None or str(val).lower() == "nan" or val == "":
+                return False
+        return True
