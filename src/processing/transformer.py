@@ -1,5 +1,6 @@
 from collections import defaultdict
 from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
 
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
@@ -13,9 +14,10 @@ from src.storage.mongo_client import (
 from src.utils.logger import logger
 
 
-def load_raw_by_type(raw: Collection) -> dict[str, list[dict]]:
+def load_raw_by_type(raw: Collection, since: datetime | None = None) -> dict[str, list[dict]]:
+    query = {"received_at": {"$gte": since}} if since else {}
     grouped: dict[str, list[dict]] = defaultdict(list)
-    for doc in raw.find({}, {"_id": 0, "type": 1, "payload": 1}):
+    for doc in raw.find(query, {"_id": 0, "type": 1, "payload": 1}):
         grouped[doc["type"]].append(doc["payload"])
     return grouped
 
@@ -114,16 +116,13 @@ def build_person(
     }
 
 
-def aggregate_batch() -> None:
+def _aggregate(since: datetime | None, log_prefix: str) -> tuple[int, int, int]:
     client = build_client()
     db = get_database(client)
     raw = get_raw_collection(db)
     persons = get_persons_collection(db)
 
-    logger.info("Loading raw messages from MongoDB...")
-    grouped = load_raw_by_type(raw)
-    for msg_type, items in grouped.items():
-        logger.info("  {}: {}", msg_type, len(items))
+    grouped = load_raw_by_type(raw, since=since)
 
     bank_by_passport = index_by(grouped.get("bank", []), "passport")
     professional_index = index_by_fullname_tokens(grouped.get("professional", []))
@@ -131,7 +130,6 @@ def aggregate_batch() -> None:
     net_by_address = index_by(grouped.get("net", []), "address")
 
     personals = grouped.get("personal", [])
-    logger.info("Aggregating {} personal records...", len(personals))
 
     inserted = 0
     skipped = 0
@@ -155,12 +153,26 @@ def aggregate_batch() -> None:
             duplicates += 1
 
     logger.info(
-        "Done. inserted={} duplicates={} skipped={}",
+        "{} inserted={} duplicates={} skipped={} personals_seen={}",
+        log_prefix,
         inserted,
         duplicates,
         skipped,
+        len(personals),
     )
     client.close()
+    return inserted, duplicates, skipped
+
+
+def aggregate_batch() -> None:
+    logger.info("Full batch aggregation starting...")
+    _aggregate(since=None, log_prefix="[batch]")
+
+
+def aggregate_window(window_seconds: int = 60) -> int:
+    cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+    inserted, _, _ = _aggregate(since=cutoff, log_prefix=f"[window {window_seconds}s]")
+    return inserted
 
 
 if __name__ == "__main__":
