@@ -1,5 +1,6 @@
 from src.storage.mongo_client import get_db
 from src.storage.sql_client import upsert_person, create_table
+from src.utils.logger import logger as log
 import re
 
 
@@ -26,6 +27,7 @@ def build_person(passport: str, db) -> dict | None:
     bank     = db["bank_data"].find_one({"passport": passport})
 
     if not personal or not bank:
+        log.debug(f"passport={passport} — falta personal o bank, omitido")
         return None
 
     fullname     = personal.get("name", "") + " " + personal.get("last_name", "")
@@ -71,7 +73,7 @@ def run_transformer():
 
     passports = db["personal_data"].distinct("passport")
     total = len(passports)
-    print(f"🔄 Procesando {total} personas...")
+    log.info(f"Iniciando procesamiento de {total} personas")
 
     ok, skipped = 0, 0
     for passport in passports:
@@ -79,12 +81,12 @@ def run_transformer():
         if person:
             upsert_person(person)
             ok += 1
-            print(f"  ✅ {passport} → {person.get('name')} {person.get('last_name')}")
+            log.info(f"passport={passport} | {person.get('name')} {person.get('last_name')} → insertado")
         else:
             skipped += 1
-            print(f"  ⚠️  {passport} → datos incompletos, omitido")
+            log.warning(f"passport={passport} → datos incompletos, omitido")
 
-    print(f"\n✅ Completado: {ok} insertados, {skipped} omitidos de {total} totales")
+    log.info(f"Completado: {ok} insertados | {skipped} omitidos | {total} totales")
 
 
 if __name__ == "__main__":

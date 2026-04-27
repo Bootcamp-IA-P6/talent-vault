@@ -4,12 +4,13 @@ from pathlib import Path
 import json
 import os
 
-
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 from src.storage.mongo_client import get_db
+from src.utils.logger import logger as log
 
 # ─── Kafka ────────────────────────────────────────────
+log.inf("Iniciando conexión con Kafka...")
 consumer = KafkaConsumer(
     os.getenv("KAFKA_TOPIC", "probando"),
     bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092"),
@@ -21,6 +22,7 @@ consumer = KafkaConsumer(
 )
 
 # ─── MongoDB ──────────────────────────────────────────
+log.info("Iniciando conexión con MongoDB...")
 db = get_db()
 
 collections = {
@@ -39,16 +41,16 @@ def classify(msg: dict) -> str:
     if "IPv4"    in msg: return "net_data"
     return "unknown"
 
-print(f"✅ Conectado a Kafka y MongoDB")
-print("⏳ Esperando mensajes...\n")
+log.info(f"Conectado a Kafka [{os.getenv('KAFKA_TOPIC')}] y MongoDB [{os.getenv('MONGO_DB')}]")
+log.info("Esperando mensajes...")
 
 for message in consumer:
     data = message.value
     doc_type = classify(data)
 
     if doc_type == "unknown":
-        print(f"[WARN] offset {message.offset} — no clasificado: {data}")
+        log.warning(f"Mensaje no clasificado en offset {message.offset}: {data}")
         continue
 
     result = collections[doc_type].insert_one(data)
-    print(f"[offset {message.offset}] {doc_type:20s} → _id: {result.inserted_id}")
+    log.info(f"offset={message.offset} type={doc_type} _id={result.inserted_id}")
