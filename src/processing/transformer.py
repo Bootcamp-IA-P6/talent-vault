@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict
 from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
@@ -5,6 +6,13 @@ from datetime import UTC, datetime, timedelta
 from pymongo.collection import Collection
 from pymongo.errors import DuplicateKeyError
 
+from src.monitoring.metrics import (
+    aggregate_duplicates,
+    aggregate_duration_seconds,
+    aggregate_persons_inserted,
+    aggregate_persons_skipped,
+    aggregate_runs,
+)
 from src.storage.mongo_client import (
     build_client,
     get_database,
@@ -116,7 +124,10 @@ def build_person(
     }
 
 
-def _aggregate(since: datetime | None, log_prefix: str) -> tuple[int, int, int]:
+def _aggregate(since: datetime | None, log_prefix: str, mode: str) -> tuple[int, int, int]:
+    started = time.perf_counter()
+    aggregate_runs.labels(mode=mode).inc()
+
     client = build_client()
     db = get_database(client)
     raw = get_raw_collection(db)
@@ -152,6 +163,11 @@ def _aggregate(since: datetime | None, log_prefix: str) -> tuple[int, int, int]:
         except DuplicateKeyError:
             duplicates += 1
 
+    aggregate_persons_inserted.inc(inserted)
+    aggregate_persons_skipped.inc(skipped)
+    aggregate_duplicates.inc(duplicates)
+    aggregate_duration_seconds.labels(mode=mode).observe(time.perf_counter() - started)
+
     logger.info(
         "{} inserted={} duplicates={} skipped={} personals_seen={}",
         log_prefix,
@@ -166,12 +182,16 @@ def _aggregate(since: datetime | None, log_prefix: str) -> tuple[int, int, int]:
 
 def aggregate_batch() -> None:
     logger.info("Full batch aggregation starting...")
-    _aggregate(since=None, log_prefix="[batch]")
+    _aggregate(since=None, log_prefix="[batch]", mode="batch")
 
 
 def aggregate_window(window_seconds: int = 60) -> int:
     cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
-    inserted, _, _ = _aggregate(since=cutoff, log_prefix=f"[window {window_seconds}s]")
+    inserted, _, _ = _aggregate(
+        since=cutoff,
+        log_prefix=f"[window {window_seconds}s]",
+        mode="window",
+    )
     return inserted
 
 
