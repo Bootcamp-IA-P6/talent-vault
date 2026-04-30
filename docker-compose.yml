@@ -27,6 +27,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    expose:
+      - "9100"
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       KAFKA_TOPIC: testing
@@ -41,10 +43,13 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
       POSTGRES_DB: ${POSTGRES_DB:-talent_vault}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     depends_on:
       - kafka
       - mongodb
       - postgres
+      - redis
     restart: always
 
   api:
@@ -72,8 +77,6 @@ services:
       dockerfile: frontend/Dockerfile
     ports:
       - 8501:8501
-    environment:
-      API_BASE_URL: http://api:8000
     depends_on:
       - api
     restart: always
@@ -110,6 +113,15 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  redis:
+    container_name: redis
+    image: redis:7-alpine
+    ports:
+      - 6379:6379
+    volumes:
+      - redis_data:/data
+    restart: always
+
   mongo-express:
     container_name: mongo-express
     image: mongo-express:1
@@ -124,6 +136,24 @@ services:
       - mongodb
     restart: always
 
+  prometheus:
+    container_name: prometheus
+    image: prom/prometheus:v2.54.1
+    ports:
+      - 9090:9090
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      - api
+      - app
+    restart: always
+
 volumes:
   mongo_data:
   postgres_data:
+  prometheus_data:
+  redis_data:
