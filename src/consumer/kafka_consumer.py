@@ -7,21 +7,26 @@ import os
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 from src.storage.mongo_client import get_db
+from src.storage.redis_client import get_redis, push_to_cache, flush_cache
 from src.utils.logger import logger as log
 
-# ─── Kafka ────────────────────────────────────────────
-log.inf("Iniciando conexión con Kafka...")
+BATCH_SIZE = int(os.getenv("REDIS_BATCH_SIZE", 50))
+
+# ─── Conexiones ───────────────────────────────────────
+log.info("Iniciando conexión con Kafka...")
 consumer = KafkaConsumer(
     os.getenv("KAFKA_TOPIC", "probando"),
     bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092"),
     auto_offset_reset=os.getenv("KAFKA_AUTO_OFFSET_RESET", "earliest"),
     enable_auto_commit=True,
     group_id=os.getenv("KAFKA_GROUP_ID", "data-engineering-consumer"),
-    api_version=(2,0,2),
+    api_version=(2, 0, 2),
     value_deserializer=lambda m: json.loads(m.decode("utf-8"))
 )
 
-# ─── MongoDB ──────────────────────────────────────────
+log.info("Iniciando conexión con Redis...")
+r = get_redis()
+
 log.info("Iniciando conexión con MongoDB...")
 db = get_db()
 
@@ -33,6 +38,7 @@ collections = {
     "net_data":          db["net_data"],
 }
 
+
 def classify(msg: dict) -> str:
     if "sex"     in msg: return "personal_data"
     if "city"    in msg: return "location"
@@ -41,16 +47,31 @@ def classify(msg: dict) -> str:
     if "IPv4"    in msg: return "net_data"
     return "unknown"
 
-log.info(f"Conectado a Kafka [{os.getenv('KAFKA_TOPIC')}] y MongoDB [{os.getenv('MONGO_DB')}]")
+
+def flush_to_mongo(doc_type: str):
+    """Vuelca el batch de Redis a MongoDB."""
+    docs = flush_cache(r, doc_type)
+    if docs:
+        collections[doc_type].insert_many(docs)
+        log.info(f"Batch volcado a MongoDB | type={doc_type} | docs={len(docs)}")
+
+
+log.info(f"Conectado a Kafka [{os.getenv('KAFKA_TOPIC')}] | Redis | MongoDB [{os.getenv('MONGO_DB')}]")
+log.info(f"Batch size: {BATCH_SIZE} mensajes por tipo antes de volcar a MongoDB")
 log.info("Esperando mensajes...")
 
 for message in consumer:
-    data = message.value
+    data     = message.value
     doc_type = classify(data)
 
     if doc_type == "unknown":
-        log.warning(f"Mensaje no clasificado en offset {message.offset}: {data}")
+        log.warning(f"Mensaje no clasificado | offset={message.offset} | data={data}")
         continue
 
-    result = collections[doc_type].insert_one(data)
-    log.info(f"offset={message.offset} type={doc_type} _id={result.inserted_id}")
+    # 1. Guardar en Redis
+    size = push_to_cache(r, doc_type, data)
+    log.debug(f"offset={message.offset} | type={doc_type} | cache_size={size}")
+
+    # 2. Si se alcanza el batch, volcar a MongoDB
+    if size >= BATCH_SIZE:
+        flush_to_mongo(doc_type)
