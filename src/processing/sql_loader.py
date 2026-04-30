@@ -1,6 +1,13 @@
+import time
+
 from sqlalchemy.dialects.postgresql import insert
 
 from src.models.sql_models import Person
+from src.monitoring.metrics import (
+    sql_persons_synced,
+    sql_sync_duration_seconds,
+    sql_sync_runs,
+)
 from src.storage.mongo_client import build_client, get_database, get_persons_collection
 from src.storage.sql_client import build_engine, build_session_factory, create_schema
 from src.utils.logger import logger
@@ -13,6 +20,9 @@ def project_to_sql(doc: dict) -> dict:
 
 
 def load_persons_to_sql(batch_size: int = 500) -> None:
+    started = time.perf_counter()
+    sql_sync_runs.inc()
+
     engine = build_engine()
     create_schema(engine)
     session_factory = build_session_factory(engine)
@@ -42,6 +52,10 @@ def load_persons_to_sql(batch_size: int = 500) -> None:
 
     mongo.close()
     engine.dispose()
+
+    sql_persons_synced.inc(inserted + updated)
+    sql_sync_duration_seconds.observe(time.perf_counter() - started)
+
     logger.info("Done. processed={} (upsert by passport)", inserted + updated)
 
 
@@ -52,6 +66,11 @@ def _flush(session, rows: list[dict]) -> tuple[int, int]:
     result = session.execute(stmt)
     session.commit()
     return (result.rowcount or 0, 0)
+
+
+def upsert_person(session, person: dict) -> None:
+    """Single-row upsert helper used by the real-time path."""
+    _flush(session, [project_to_sql(person)])
 
 
 if __name__ == "__main__":
