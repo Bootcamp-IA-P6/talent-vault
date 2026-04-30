@@ -6,6 +6,7 @@ import os
 
 load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
+from src.consumer.utils import classify
 from src.storage.mongo_client import get_db
 from src.storage.redis_client import get_redis, push_to_cache, flush_cache
 from src.utils.logger import logger as log
@@ -37,15 +38,6 @@ collections = {
     "bank_data":         db["bank_data"],
     "net_data":          db["net_data"],
 }
-
-
-def classify(msg: dict) -> str:
-    if "sex"     in msg: return "personal_data"
-    if "city"    in msg: return "location"
-    if "company" in msg: return "professional_data"
-    if "IBAN"    in msg: return "bank_data"
-    if "IPv4"    in msg: return "net_data"
-    return "unknown"
 
 
 def flush_to_mongo(doc_type: str):

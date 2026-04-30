@@ -16,6 +16,7 @@ dependencies = [
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
+    "kafka-python-ng>=2.2.3",
 ]
 
 [project.optional-dependencies]
