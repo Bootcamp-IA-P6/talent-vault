@@ -1,9 +1,18 @@
-.PHONY: dev down build logs ps test lint clean status watch aggregate sync-sql pipeline mongo-shell psql mongo-ui
+.PHONY: dev dev-no-gen gen-stop gen-start down build logs ps test lint clean status watch aggregate sync-sql pipeline mongo-shell psql mongo-ui
 
 # ---------- Stack lifecycle ----------
 
 dev:          ## Start the whole stack in background (Kafka, Mongo, Postgres, app, datagen, Mongo Express)
 	docker compose up -d
+
+dev-no-gen:   ## Start the whole stack WITHOUT random_generator (no new data ingested)
+	docker compose up -d --scale random_generator=0
+
+gen-stop:     ## Stop the random_generator (everything else keeps running)
+	docker compose stop random_generator
+
+gen-start:    ## Start (or resume) the random_generator
+	docker compose start random_generator
 
 down:         ## Stop all containers (keeps data volumes)
 	docker compose down

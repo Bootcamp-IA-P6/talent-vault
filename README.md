@@ -79,6 +79,50 @@ make dev
 
 That brings up every service in the background. Open **http://localhost:8081** to inspect MongoDB visually.
 
+### Controlling the data generator
+
+The `random_generator` service produces fake employee fragments to Kafka **as fast as it can** ([datagen/kafka_push.py](datagen/kafka_push.py)) — there is no throttling. On a developer laptop it easily piles up tens of millions of raw messages in a few hours, which makes the UI hard to read (counts move every second) and the aggregator fall behind.
+
+To make the system easy to inspect, you can start the stack without the generator and turn it on/off on demand:
+
+| Command           | Effect                                                                                              |
+|-------------------|-----------------------------------------------------------------------------------------------------|
+| `make dev-no-gen` | `docker compose up -d --scale random_generator=0` — boots Kafka, Zookeeper, MongoDB, PostgreSQL, the consumer (`app`), the API, the frontend and Mongo Express, but leaves the generator container off. |
+| `make gen-start`  | `docker compose start random_generator` — spins the generator back up. It will reconnect to Kafka and resume publishing fragments to the `testing` topic. |
+| `make gen-stop`   | `docker compose stop random_generator` — stops the generator only. Kafka keeps whatever is already in the topic; the consumer keeps draining it; the periodic pipeline keeps aggregating. |
+| `make dev`        | Equivalent to `docker compose up -d` — starts **everything**, generator included. Use this when you want a full live demo. |
+
+#### What is still running when the generator is stopped
+
+Stopping the generator does **not** pause the rest of the pipeline. With `make dev-no-gen` (or after `make gen-stop`):
+
+- **Kafka / Zookeeper** stay up and keep whatever messages are already buffered.
+- **`app` (consumer)** keeps reading any pending Kafka messages and writing them to `raw_messages` in MongoDB. Once the topic is drained, `raw_messages` stops growing.
+- **`app` (continuous pipeline)** keeps ticking every 10 seconds over a 60-second window ([src/main.py](src/main.py)). After ~60s without new raw messages it has nothing left to aggregate, so `persons` stops growing too.
+- **MongoDB / PostgreSQL** keep all data; volumes are persistent.
+- **API (`:8000`) and frontend (`:8501`)** keep serving the data already in PostgreSQL.
+
+This is the right state for reading the UI calmly, running queries from `make psql`, or recording a demo without numbers flickering.
+
+#### Catching up the historical backlog
+
+The continuous loop only processes the last 60 seconds of raw messages. If you stopped the generator after a long run and want to drain everything that is still sitting unprocessed in MongoDB, run the full batch ETL:
+
+```bash
+make gen-stop          # make sure new fragments are not arriving
+make pipeline          # full batch: aggregate ALL raw_messages -> Mongo persons -> Postgres
+make status            # confirm the three counts are aligned
+```
+
+`make pipeline` runs `aggregate_batch()` ([src/processing/transformer.py](src/processing/transformer.py)) without a time window, so it processes the entire history. Depending on backlog size this can take from a few seconds to several minutes.
+
+#### Typical workflows
+
+- **Quiet inspection** — `make dev-no-gen` → open `http://localhost:8501` and explore.
+- **Live demo** — `make dev` → watch counts grow in `make watch`.
+- **Calm down a noisy stack** — `make gen-stop` → `make pipeline` → `make status`.
+- **Resume ingestion** — `make gen-start` (no need to restart anything else).
+
 ### First-time data load
 
 The consumer keeps writing raw messages to Mongo forever. To populate the unified `persons` collection and the Postgres table, run the ETL step manually (once there's some data):
@@ -92,6 +136,9 @@ make pipeline
 | Command             | What it does                                                              |
 |---------------------|---------------------------------------------------------------------------|
 | `make dev`          | Start the whole stack in the background                                   |
+| `make dev-no-gen`   | Start the whole stack **without** `random_generator` (no new data)        |
+| `make gen-stop`     | Stop the `random_generator` (everything else keeps running)               |
+| `make gen-start`    | Start (or resume) the `random_generator`                                  |
 | `make down`         | Stop containers (data volumes are preserved)                              |
 | `make build`        | Rebuild images and (re)start                                              |
 | `make clean`        | Stop containers and **delete** Mongo and Postgres volumes                 |
