@@ -1,4 +1,4 @@
-.PHONY: dev dev-no-gen gen-stop gen-start down build logs ps test lint clean status watch aggregate sync-sql pipeline mongo-shell psql mongo-ui
+.PHONY: dev dev-no-gen gen-stop gen-start down build logs ps test lint clean status watch aggregate sync-sql pipeline mongo-shell psql mongo-ui prom-ui redis-shell fe-dev fe-build
 
 # ---------- Stack lifecycle ----------
 
@@ -61,6 +61,20 @@ psql:         ## Open an interactive psql session connected to the running conta
 
 mongo-ui:     ## Print the Mongo Express URL
 	@echo "Open http://localhost:8081"
+
+prom-ui:      ## Print the Prometheus URL
+	@echo "Open http://localhost:9090  (try query: rate(talent_vault_kafka_messages_consumed_total[1m]))"
+
+redis-shell:  ## Open an interactive redis-cli session inside the running container
+	docker exec -it redis redis-cli
+
+# ---------- Frontend (host dev server) ----------
+
+fe-dev:       ## Run the Vite dev server on the host (HMR) against the API in Docker
+	cd frontend && pnpm install && pnpm dev
+
+fe-build:     ## Local production build of the frontend (sanity check)
+	cd frontend && pnpm install && pnpm build
 
 # ---------- QA ----------
 
