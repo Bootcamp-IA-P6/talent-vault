@@ -1,6 +1,16 @@
 import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Mail, Presentation, Search, Sparkles, Users } from 'lucide-react';
+import {
+  Activity,
+  BookOpen,
+  Database,
+  LayoutDashboard,
+  Mail,
+  Presentation,
+  Search,
+  Sparkles,
+  Users,
+} from 'lucide-react';
 import logoUrl from '@/assets/logo.png';
 import { cn } from '@/lib/cn';
 import { Button } from '@/components/ui/Button';
@@ -13,6 +23,24 @@ type Props = {
 const tabs = [
   { to: '/app/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/app/personas', label: 'Personas', icon: Users },
+];
+
+const externalTools = [
+  {
+    href: 'http://localhost:8081',
+    label: 'Mongo Express',
+    icon: Database,
+  },
+  {
+    href: 'http://localhost:9090/graph?g0.expr=sum%20by%20(type)%20(rate(talent_vault_kafka_messages_consumed_total%5B1m%5D))&g0.tab=0&g0.display_mode=lines&g0.show_exemplars=0&g0.range_input=5m&g1.expr=increase(talent_vault_realtime_persons_assembled_total%5B1m%5D)&g1.tab=0&g1.display_mode=lines&g1.show_exemplars=0&g1.range_input=5m&g2.expr=histogram_quantile(0.9%2C%20rate(talent_vault_pipeline_tick_duration_seconds_bucket%5B5m%5D))&g2.tab=0&g2.display_mode=lines&g2.show_exemplars=0&g2.range_input=5m',
+    label: 'Prometheus',
+    icon: Activity,
+  },
+  {
+    href: 'http://localhost:8000/docs',
+    label: 'API docs',
+    icon: BookOpen,
+  },
 ];
 
 export default function Navbar({ onOpenSearch }: Props) {
@@ -64,6 +92,22 @@ export default function Navbar({ onOpenSearch }: Props) {
               {cmdKey} K
             </kbd>
           </button>
+
+          <div className="hidden items-center gap-1 border-l border-border pl-3 md:flex">
+            {externalTools.map(({ href, label, icon: Icon }) => (
+              <a
+                key={href}
+                href={href}
+                target="_blank"
+                rel="noreferrer noopener"
+                title={`${label} (${href})`}
+                aria-label={label}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-md text-muted transition-colors hover:bg-surface-2 hover:text-text"
+              >
+                <Icon className="h-4 w-4" aria-hidden />
+              </a>
+            ))}
+          </div>
 
           <Button
             variant="outline"
