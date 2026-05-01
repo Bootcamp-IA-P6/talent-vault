@@ -12,3 +12,6 @@ node_modules/
 frontend/dist/
 .DS_Store
 logs/
+*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js
