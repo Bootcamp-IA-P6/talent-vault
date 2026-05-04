@@ -41,7 +41,6 @@ talent_vault/
 ## 🚀 Guía de Inicio Rápido
 
 ### 1. Requisitos Previos
-*   Tener instalado **Docker** y **Docker Compose**.
 *   Tener instalado **uv**: 
     ```bash
     curl -LsSf https://astral.sh/uv/install.sh | sh
