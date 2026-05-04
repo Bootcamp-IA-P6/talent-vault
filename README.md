@@ -4,9 +4,8 @@
 
 ¡Bienvenidos al proyecto **Talent Vault**! Este sistema está diseñado para capturar, procesar y unificar datos dispersos de recursos humanos provenientes de un flujo continuo de **Apache Kafka**.
 
-## 🍎 La Analogía del Proyecto
-Imagina que este sistema es una **Fábrica de Pasteles de Manzana**:
-1. **Kafka** es el camión que descarga piezas sueltas (pieles, pulpa, semillas) de forma aleatoria y masiva.
+
+1. **Kafka** es el camión que descarga piezas sueltas de forma aleatoria y masiva.
 2. **MongoDB** es nuestro almacén de materia prima (Data Lake) donde guardamos todo rápido para que no se pierda.
 3. **Python + Pandas** es nuestra mesa de montaje donde unimos las piezas de cada persona.
 4. **PostgreSQL** es nuestra vitrina final (Data Warehouse) donde solo hay pasteles terminados y perfectos.
