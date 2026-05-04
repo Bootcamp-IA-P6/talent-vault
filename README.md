@@ -284,4 +284,4 @@ Each team member works on their `vX` branch and opens a Pull Request to `dev`. O
 
 ## Team
 
-Developed at Factoria F5 Madrid — Machine Learning Bootcamp.
+Developed at Factoria F5 Madrid — IA Bootcamp P6.
