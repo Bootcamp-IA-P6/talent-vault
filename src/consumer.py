@@ -13,7 +13,7 @@ class TalentVaultConsumer:
             enable_auto_commit=True       # Marca los mensajes como "leídos" automáticamente
         )
 
-    def consume_batches(self, batch_size=50):
+    def consume_batches(self, batch_size=100):
         """
         Lee mensajes de Kafka y los devuelve en grupos (chunks).
         Esto es mucho más eficiente que procesar uno por uno.
