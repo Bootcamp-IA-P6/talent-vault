@@ -32,7 +32,7 @@ services:
 
   # NUEVO: Vitrina final (PostgreSQL)
   postgres:
-    image: postgres:15
+    image: postgres:15 latest
     container_name: postgres
     ports:
       - "5432:5432"
