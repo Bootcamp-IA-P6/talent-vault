@@ -7,6 +7,7 @@
 ![Redis](https://img.shields.io/badge/Redis-7-red?logo=redis)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.1.0-teal?logo=fastapi)
 ![Docker](https://img.shields.io/badge/Docker-Compose-blue?logo=docker)
+![Prometheus](https://img.shields.io/badge/Prometheus-monitoring-orange?logo=prometheus)
 
 A real-time data engineering platform that consumes HR data from Apache Kafka, stores raw messages in MongoDB, processes and unifies employee records, and persists them into PostgreSQL for analysis.
 
@@ -32,7 +33,8 @@ A real-time data engineering platform that consumes HR data from Apache Kafka, s
                                                       │
                                               ┌───────▼──────┐
                                               │  Transformer  │
-                                              │  (grouping)   │
+                                              │ (auto every   │
+                                              │  5 minutes)   │
                                               └───────┬──────┘
                                                       │
                                               ┌───────▼──────┐
@@ -43,10 +45,15 @@ A real-time data engineering platform that consumes HR data from Apache Kafka, s
                                               ┌───────▼──────┐
                                               │  FastAPI      │
                                               │  REST API     │
+                                              └───────┬──────┘
+                                                      │
+                                              ┌───────▼──────┐
+                                              │  Prometheus   │
+                                              │  /metrics     │
                                               └──────────────┘
 ```
 
-Each Kafka message contains one of five document types — `personal_data`, `location`, `professional_data`, `bank_data`, or `net_data` — which are first cached in Redis, then flushed to MongoDB in batches, and finally unified into a single `persons` record in PostgreSQL by the transformer.
+Each Kafka message contains one of five document types — `personal_data`, `location`, `professional_data`, `bank_data`, or `net_data` — which are first cached in Redis, then flushed to MongoDB in batches, and finally unified into a single `persons` record in PostgreSQL by the transformer. The transformer runs automatically every 5 minutes via a scheduler.
 
 ---
 
@@ -61,6 +68,7 @@ Each Kafka message contains one of five document types — `personal_data`, `loc
 | API | FastAPI + uvicorn |
 | Frontend | React |
 | Monitoring | Prometheus |
+| Scheduling | schedule |
 | Package manager | uv |
 | Containerization | Docker + Docker Compose |
 
@@ -83,6 +91,12 @@ Clone the repository including the data source submodule:
 ```bash
 git clone --recurse-submodules git@github.com:Bootcamp-IA-P6/talent-vault.git
 cd talent-vault
+```
+
+Create the shared Docker network:
+
+```bash
+docker network create talent-network
 ```
 
 Copy and fill in the environment variables:
@@ -120,34 +134,43 @@ uv sync
 | `REDIS_HOST` | Redis host | `localhost` |
 | `REDIS_PORT` | Redis port | `6379` |
 | `REDIS_BATCH_SIZE` | Messages per type before flushing to MongoDB | `50` |
+| `TRANSFORMER_INTERVAL_MINUTES` | How often the transformer runs automatically | `5` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 
 ---
 
 ## Run
 
-Start all services:
+Start the data source (Kafka + generator):
 
 ```bash
-make dev
+cd external/data-source
+docker compose up -d
+cd ../..
+```
+
+Start the main stack:
+
+```bash
+docker compose up -d
 ```
 
 Stop all services:
 
 ```bash
-make down
+docker compose down
 ```
 
 Rebuild containers:
 
 ```bash
-make build
+docker compose build
 ```
 
 View logs:
 
 ```bash
-make logs
+docker logs talent-vault-app -f
 ```
 
 Run the Kafka consumer manually:
@@ -171,6 +194,7 @@ Base URL: `http://localhost:8000`
 | Method | Endpoint | Description |
 |---|---|---|
 | GET | `/health` | Health check |
+| GET | `/metrics` | Prometheus metrics scraping endpoint |
 | GET | `/persons/` | Paginated list of persons (`?limit=20&offset=0`) |
 | GET | `/persons/search` | Search by name, city, company or job |
 | GET | `/persons/stats` | Aggregated statistics |
@@ -180,10 +204,41 @@ Interactive docs available at `http://localhost:8000/docs`.
 
 ---
 
+## Monitoring
+
+Prometheus scrapes metrics from the app every 15 seconds.
+
+| URL | Description |
+|---|---|
+| `http://localhost:9090` | Prometheus UI |
+| `http://localhost:9090/targets` | Scraping targets status |
+| `http://localhost:8000/metrics` | Raw metrics endpoint |
+
+Useful PromQL queries:
+
+```promql
+# Messages consumed per type
+rate(kafka_messages_consumed_total[5m])
+
+# Redis cache size per type
+redis_cache_size
+
+# Batches flushed to MongoDB
+redis_batch_flushed_total
+
+# Persons processed by transformer
+transformer_persons_processed_total
+
+# App memory usage
+process_resident_memory_bytes
+```
+
+---
+
 ## Run Tests
 
 ```bash
-make test
+uv run pytest tests/ -v
 ```
 
 ---
@@ -198,7 +253,7 @@ talent-vault/
 │   ├── processing/     # Data transformer (MongoDB → PostgreSQL)
 │   ├── models/         # Data models
 │   ├── api/            # FastAPI REST API
-│   ├── monitoring/     # Prometheus metrics
+│   ├── monitoring/     # Prometheus metrics definitions
 │   └── utils/          # Logger and config
 ├── tests/              # Unit tests
 ├── frontend/           # React frontend
@@ -207,7 +262,6 @@ talent-vault/
 ├── external/           # Kafka data source submodule
 ├── docker-compose.yml
 ├── Dockerfile
-├── Makefile
 ├── pyproject.toml
 └── .env.example
 ```
