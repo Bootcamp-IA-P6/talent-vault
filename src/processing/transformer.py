@@ -1,91 +1,199 @@
-from src.storage.mongo_client import get_db
-from src.storage.sql_client import upsert_person, create_table
-from src.utils.logger import logger
-from src.monitoring.metrics import (
-    PERSONS_PROCESSED,
-    PERSONS_SKIPPED,
-    TRANSFORMER_DURATION,
-)
 import time
-import re
+from collections import defaultdict
+from collections.abc import Iterable
+from datetime import UTC, datetime, timedelta
+
+from pymongo.collection import Collection
+from pymongo.errors import DuplicateKeyError
+
+from src.monitoring.metrics import (
+    aggregate_duplicates,
+    aggregate_duration_seconds,
+    aggregate_persons_inserted,
+    aggregate_persons_skipped,
+    aggregate_runs,
+)
+from src.storage.mongo_client import (
+    build_client,
+    get_database,
+    get_persons_collection,
+    get_raw_collection,
+)
+from src.utils.logger import logger
 
 
-def parse_salary(salary_str: str) -> str:
-    """Limpia el salary: '45000€' → '45000'"""
-    if not salary_str:
+def load_raw_by_type(raw: Collection, since: datetime | None = None) -> dict[str, list[dict]]:
+    query = {"received_at": {"$gte": since}} if since else {}
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for doc in raw.find(query, {"_id": 0, "type": 1, "payload": 1}):
+        grouped[doc["type"]].append(doc["payload"])
+    return grouped
+
+
+def index_by(items: Iterable[dict], key: str) -> dict[str, list[dict]]:
+    result: dict[str, list[dict]] = defaultdict(list)
+    for item in items:
+        value = item.get(key)
+        if value is None:
+            continue
+        result[value].append(item)
+    return result
+
+
+def pop_match(index: dict[str, list[dict]], value: str | None) -> dict:
+    if value is None:
+        return {}
+    bucket = index.get(value)
+    if not bucket:
+        return {}
+    return bucket.pop(0)
+
+
+def index_by_fullname_tokens(items: Iterable[dict]) -> dict[str, list[dict]]:
+    """Index records by every whitespace-separated token in their fullname."""
+    index: dict[str, list[dict]] = defaultdict(list)
+    for item in items:
+        fullname = item.get("fullname") or ""
+        for token in fullname.split():
+            index[token].append(item)
+    return index
+
+
+def pop_fuzzy_match(
+    index: dict[str, list[dict]],
+    name: str | None,
+    last_name: str | None,
+) -> dict:
+    """Find a record whose fullname contains both name and last_name as substrings."""
+    if not name or not last_name:
+        return {}
+    bucket = index.get(last_name.split()[0], [])
+    for record in bucket:
+        fullname = record.get("fullname") or ""
+        if name in fullname and last_name in fullname:
+            for token in fullname.split():
+                if record in index[token]:
+                    index[token].remove(record)
+            return record
+    return {}
+
+
+def build_person(
+    personal: dict,
+    bank_by_passport: dict[str, list[dict]],
+    professional_index: dict[str, list[dict]],
+    location_index: dict[str, list[dict]],
+    net_by_address: dict[str, list[dict]],
+) -> dict | None:
+    passport = personal.get("passport")
+    if not passport:
         return None
-    return re.sub(r"[^\d]", "", salary_str) or None
 
+    name = personal.get("name") or ""
+    last_name = personal.get("last_name") or ""
+    fullname = f"{name} {last_name}".strip()
 
-def parse_sex(sex_val) -> str:
-    """Normaliza sex: ['F'] → 'F', None → None"""
-    if isinstance(sex_val, list) and sex_val:
-        return sex_val[0]
-    return None
+    bank = pop_match(bank_by_passport, passport)
+    professional = pop_fuzzy_match(professional_index, name, last_name)
+    location = pop_fuzzy_match(location_index, name, last_name)
+    address = location.get("address")
+    net = pop_match(net_by_address, address)
 
-
-def build_person(passport: str, db) -> dict | None:
-    personal = db["personal_data"].find_one({"passport": passport})
-    bank     = db["bank_data"].find_one({"passport": passport})
-
-    if not personal or not bank:
-        logger.debug(f"passport={passport} — falta personal o bank, omitido")
-        return None
-
-    fullname = (personal.get("name", "") + " " + personal.get("last_name", "")).strip()
-
-    location     = db["location"].find_one({"fullname": {"$regex": fullname, "$options": "i"}})
-    professional = db["professional_data"].find_one({"fullname": {"$regex": fullname, "$options": "i"}})
-    net          = db["net_data"].find_one({"address": location.get("address")}) if location else None
+    sex = personal.get("sex")
+    if isinstance(sex, list):
+        sex = sex[0] if sex else None
 
     return {
-        "passport":        passport,
-        "name":            personal.get("name"),
-        "last_name":       personal.get("last_name"),
-        "sex":             parse_sex(personal.get("sex")),
-        "telfnumber":      personal.get("telfnumber"),
-        "email":           personal.get("email"),
-        "fullname":        location.get("fullname")            if location     else fullname,
-        "city":            location.get("city")                if location     else None,
-        "address":         location.get("address")             if location     else None,
-        "company":         professional.get("company")         if professional else None,
-        "company_address": professional.get("company address") if professional else None,
-        "company_phone":   professional.get("company_telfnumber") if professional else None,
-        "company_email":   professional.get("company_email")   if professional else None,
-        "job":             professional.get("job")             if professional else None,
-        "iban":            bank.get("IBAN"),
-        "salary":          parse_salary(bank.get("salary")),
-        "ipv4":            net.get("IPv4") if net else None,
+        "passport": passport,
+        "name": personal.get("name"),
+        "last_name": personal.get("last_name"),
+        "fullname": fullname,
+        "email": personal.get("email"),
+        "telfnumber": personal.get("telfnumber"),
+        "sex": sex,
+        "IBAN": bank.get("IBAN"),
+        "salary": bank.get("salary"),
+        "company": professional.get("company"),
+        "company_address": professional.get("company address"),
+        "company_email": professional.get("company_email"),
+        "company_telfnumber": professional.get("company_telfnumber"),
+        "job": professional.get("job"),
+        "city": location.get("city"),
+        "address": address,
+        "IPv4": net.get("IPv4"),
     }
 
 
-def run_transformer():
-    db = get_db()
-    create_table()
+def _aggregate(since: datetime | None, log_prefix: str, mode: str) -> tuple[int, int, int]:
+    started = time.perf_counter()
+    aggregate_runs.labels(mode=mode).inc()
 
-    passports = db["personal_data"].distinct("passport")
-    total     = len(passports)
-    logger.info(f"Iniciando procesamiento de {total} personas")
+    client = build_client()
+    db = get_database(client)
+    raw = get_raw_collection(db)
+    persons = get_persons_collection(db)
 
-    start = time.time()
-    ok, skipped = 0, 0
+    grouped = load_raw_by_type(raw, since=since)
 
-    for passport in passports:
-        person = build_person(passport, db)
-        if person:
-            upsert_person(person)
-            ok += 1
-            PERSONS_PROCESSED.inc()
-            logger.info(f"passport={passport} | {person.get('name')} {person.get('last_name')} → insertado")
-        else:
+    bank_by_passport = index_by(grouped.get("bank", []), "passport")
+    professional_index = index_by_fullname_tokens(grouped.get("professional", []))
+    location_index = index_by_fullname_tokens(grouped.get("location", []))
+    net_by_address = index_by(grouped.get("net", []), "address")
+
+    personals = grouped.get("personal", [])
+
+    inserted = 0
+    skipped = 0
+    duplicates = 0
+
+    for personal in personals:
+        person = build_person(
+            personal,
+            bank_by_passport,
+            professional_index,
+            location_index,
+            net_by_address,
+        )
+        if person is None:
             skipped += 1
-            PERSONS_SKIPPED.inc()
-            logger.warning(f"passport={passport} → datos incompletos, omitido")
+            continue
+        try:
+            persons.insert_one(person)
+            inserted += 1
+        except DuplicateKeyError:
+            duplicates += 1
 
-    duration = time.time() - start
-    TRANSFORMER_DURATION.observe(duration)
-    logger.info(f"Completado: {ok} insertados | {skipped} omitidos | {total} totales | duration={duration:.2f}s")
+    aggregate_persons_inserted.inc(inserted)
+    aggregate_persons_skipped.inc(skipped)
+    aggregate_duplicates.inc(duplicates)
+    aggregate_duration_seconds.labels(mode=mode).observe(time.perf_counter() - started)
+
+    logger.info(
+        "{} inserted={} duplicates={} skipped={} personals_seen={}",
+        log_prefix,
+        inserted,
+        duplicates,
+        skipped,
+        len(personals),
+    )
+    client.close()
+    return inserted, duplicates, skipped
+
+
+def aggregate_batch() -> None:
+    logger.info("Full batch aggregation starting...")
+    _aggregate(since=None, log_prefix="[batch]", mode="batch")
+
+
+def aggregate_window(window_seconds: int = 60) -> int:
+    cutoff = datetime.now(UTC) - timedelta(seconds=window_seconds)
+    inserted, _, _ = _aggregate(
+        since=cutoff,
+        log_prefix=f"[window {window_seconds}s]",
+        mode="window",
+    )
+    return inserted
 
 
 if __name__ == "__main__":
-    run_transformer()
+    aggregate_batch()

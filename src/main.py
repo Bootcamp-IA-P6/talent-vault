@@ -1,54 +1,54 @@
 import threading
 import time
-import schedule
-import uvicorn
-from dotenv import load_dotenv
-from pathlib import Path
 
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-from src.consumer.kafka_consumer import run_consumer
-from src.processing.transformer import run_transformer
+from src.consumer.kafka_consumer import run as run_consumer
+from src.monitoring.metrics import (
+    pipeline_last_inserted,
+    pipeline_tick_duration_seconds,
+    start_metrics_server,
+)
+from src.processing.sql_loader import load_persons_to_sql
+from src.processing.transformer import aggregate_window
 from src.utils.logger import logger
-import os
 
-TRANSFORMER_INTERVAL = int(os.getenv("TRANSFORMER_INTERVAL_MINUTES", 5))
-
-
-def start_api():
-    uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, log_level="warning")
+TICK_SECONDS = 10
+WINDOW_SECONDS = 60
+METRICS_PORT = 9100
 
 
-def run_scheduler():
-    """Ejecuta el transformer cada X minutos en bucle."""
-    logger.info(f"Scheduler iniciado — transformer cada {TRANSFORMER_INTERVAL} minutos")
+def pipeline_loop(stop_event: threading.Event) -> None:
+    logger.info(
+        "Pipeline loop running every {}s over a {}s window",
+        TICK_SECONDS,
+        WINDOW_SECONDS,
+    )
+    while not stop_event.is_set():
+        tick_started = time.perf_counter()
+        try:
+            inserted = aggregate_window(WINDOW_SECONDS)
+            pipeline_last_inserted.set(inserted)
+            if inserted > 0:
+                load_persons_to_sql()
+        except Exception:
+            logger.exception("Pipeline tick failed")
+        finally:
+            pipeline_tick_duration_seconds.observe(time.perf_counter() - tick_started)
+        stop_event.wait(TICK_SECONDS)
 
-    # Primera ejecución inmediata al arrancar
-    run_transformer()
 
-    schedule.every(TRANSFORMER_INTERVAL).minutes.do(run_transformer)
+def main() -> None:
+    logger.info("Starting Talent Vault pipeline...")
+    start_metrics_server(METRICS_PORT)
+    logger.info("Prometheus metrics exposed on :{}/metrics", METRICS_PORT)
 
-    while True:
-        schedule.run_pending()
-        time.sleep(30)
+    stop = threading.Event()
+    t = threading.Thread(target=pipeline_loop, args=(stop,), daemon=True)
+    t.start()
 
-
-def main():
-    logger.info("Arrancando Talent Vault...")
-
-    # Consumer en hilo separado (bucle infinito)
-    consumer_thread = threading.Thread(target=run_consumer, daemon=True, name="kafka-consumer")
-    consumer_thread.start()
-    logger.info("Consumer iniciado en hilo separado")
-
-    # Scheduler del transformer en hilo separado
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True, name="transformer-scheduler")
-    scheduler_thread.start()
-    logger.info(f"Transformer scheduler iniciado — cada {TRANSFORMER_INTERVAL} minutos")
-
-    # API en el hilo principal
-    logger.info("Iniciando API en http://0.0.0.0:8000")
-    start_api()
+    try:
+        run_consumer()
+    finally:
+        stop.set()
 
 
 if __name__ == "__main__":

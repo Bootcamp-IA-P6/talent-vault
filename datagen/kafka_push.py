@@ -8,7 +8,7 @@ def make_producer(host):
 
 def send_random(producer):
     for msg in RandomDataGenerator():
-        producer.send("probando", msg)
+        producer.send("testing", msg)
         print("Sent")
 
 def main():

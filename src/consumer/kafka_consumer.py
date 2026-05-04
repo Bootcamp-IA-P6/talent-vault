@@ -1,90 +1,139 @@
-from kafka import KafkaConsumer
-from dotenv import load_dotenv
-from pathlib import Path
-import time
 import json
-import os
+import signal
+from collections.abc import Iterator
 
-load_dotenv(Path(__file__).parent.parent.parent / ".env")
+from kafka import KafkaConsumer
 
-from src.consumer.utils import classify
-from src.storage.mongo_client import get_db
-from src.storage.redis_client import get_redis, push_to_cache, flush_cache
-from src.utils.logger import logger as log
 from src.monitoring.metrics import (
-    MESSAGES_CONSUMED,
-    MESSAGES_UNKNOWN,
-    BATCH_FLUSHED,
-    BATCH_FLUSH_DURATION,
-    REDIS_CACHE_SIZE,
+    kafka_messages_consumed,
+    realtime_assembly_attempts,
+    realtime_persons_assembled,
 )
+from src.processing.sql_loader import upsert_person
+from src.storage.mongo_client import build_client, get_database, get_raw_collection, insert_raw
+from src.storage.redis_client import build_client as build_redis_client
+from src.storage.redis_client import register_fragment, try_assemble_person
+from src.storage.sql_client import build_engine, build_session_factory, create_schema
+from src.utils.config import settings
+from src.utils.logger import logger
 
-BATCH_SIZE = int(os.getenv("REDIS_BATCH_SIZE", 50))
+MessageType = str
+
+PERSONAL = "personal"
+BANK = "bank"
+PROFESSIONAL = "professional"
+LOCATION = "location"
+NET = "net"
+UNKNOWN = "unknown"
 
 
-def flush_to_mongo(collections: dict, r, doc_type: str):
-    """Vuelca el batch de Redis a MongoDB y registra métricas."""
-    start = time.time()
-    docs = flush_cache(r, doc_type)
-    if docs:
-        collections[doc_type].insert_many(docs)
-        duration = time.time() - start
-        BATCH_FLUSHED.labels(doc_type=doc_type).inc()
-        BATCH_FLUSH_DURATION.labels(doc_type=doc_type).observe(duration)
-        log.info(f"Batch volcado a MongoDB | type={doc_type} | docs={len(docs)} | duration={duration:.3f}s")
+def classify(payload: dict) -> MessageType:
+    keys = set(payload.keys())
+
+    if {"name", "last_name", "passport", "email"} <= keys:
+        return PERSONAL
+    if {"passport", "IBAN", "salary"} <= keys:
+        return BANK
+    if {"company", "job"} <= keys:
+        return PROFESSIONAL
+    if {"fullname", "city", "address"} <= keys:
+        return LOCATION
+    if keys == {"address", "IPv4"}:
+        return NET
+    return UNKNOWN
 
 
-def run_consumer():
-    """Punto de entrada del consumer."""
-
-    log.info("Iniciando conexión con Kafka...")
-    consumer = KafkaConsumer(
-        os.getenv("KAFKA_TOPIC", "probando"),
-        bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:29092"),
-        auto_offset_reset=os.getenv("KAFKA_AUTO_OFFSET_RESET", "earliest"),
+def build_consumer() -> KafkaConsumer:
+    return KafkaConsumer(
+        settings.kafka_topic,
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+        group_id=settings.kafka_group_id,
+        auto_offset_reset="earliest",
         enable_auto_commit=True,
-        group_id=os.getenv("KAFKA_GROUP_ID", "data-engineering-consumer"),
-        api_version=(2, 0, 2),
-        value_deserializer=lambda m: json.loads(m.decode("utf-8"))
+        value_deserializer=lambda v: json.loads(v.decode("utf-8")),
+        client_id="talent-vault-consumer",
     )
 
-    log.info("Iniciando conexión con Redis...")
-    r = get_redis()
 
-    log.info("Iniciando conexión con MongoDB...")
-    db = get_db()
+def stream_messages(consumer: KafkaConsumer) -> Iterator[tuple[MessageType, dict]]:
+    for record in consumer:
+        payload = record.value
+        yield classify(payload), payload
 
-    collections = {
-        "personal_data":     db["personal_data"],
-        "location":          db["location"],
-        "professional_data": db["professional_data"],
-        "bank_data":         db["bank_data"],
-        "net_data":          db["net_data"],
-    }
 
-    log.info(f"Conectado a Kafka [{os.getenv('KAFKA_TOPIC')}] | Redis | MongoDB [{os.getenv('MONGO_DB')}]")
-    log.info(f"Batch size: {BATCH_SIZE} mensajes por tipo antes de volcar a MongoDB")
-    log.info("Esperando mensajes...")
+def run() -> None:
+    logger.info(
+        "Connecting consumer broker={} topic={} group={}",
+        settings.kafka_bootstrap_servers,
+        settings.kafka_topic,
+        settings.kafka_group_id,
+    )
+    consumer = build_consumer()
+    mongo_client = build_client()
+    collection = get_raw_collection(get_database(mongo_client))
 
-    for message in consumer:
-        data     = message.value
-        doc_type = classify(data)
+    redis_client = build_redis_client()
+    sql_engine = build_engine()
+    create_schema(sql_engine)
+    sql_session_factory = build_session_factory(sql_engine)
+    ttl = settings.redis_fragment_ttl_seconds
 
-        if doc_type == "unknown":
-            MESSAGES_UNKNOWN.inc()
-            log.warning(f"Mensaje no clasificado | offset={message.offset} | data={data}")
-            continue
+    stop = False
 
-        MESSAGES_CONSUMED.labels(doc_type=doc_type).inc()
+    def handle_sigterm(signum, _frame):
+        nonlocal stop
+        logger.info("Received signal {}, shutting down...", signum)
+        stop = True
+        consumer.close()
 
-        size = push_to_cache(r, doc_type, data)
-        REDIS_CACHE_SIZE.labels(doc_type=doc_type).set(size)
-        log.debug(f"offset={message.offset} | type={doc_type} | cache_size={size}")
+    signal.signal(signal.SIGINT, handle_sigterm)
+    signal.signal(signal.SIGTERM, handle_sigterm)
 
-        if size >= BATCH_SIZE:
-            flush_to_mongo(collections, r, doc_type)
-            REDIS_CACHE_SIZE.labels(doc_type=doc_type).set(0)
+    try:
+        for msg_type, payload in stream_messages(consumer):
+            insert_raw(collection, msg_type, payload)
+            kafka_messages_consumed.labels(type=msg_type).inc()
+
+            try:
+                register_fragment(redis_client, msg_type, payload, ttl)
+            except Exception:
+                logger.exception("Failed to register fragment in Redis (continuing)")
+
+            identifier = payload.get("passport") or payload.get("fullname") or payload.get("address")
+            logger.info("stored type={} key={}", msg_type, identifier)
+
+            if msg_type == PERSONAL:
+                realtime_assembly_attempts.inc()
+                try:
+                    person = try_assemble_person(redis_client, payload)
+                except Exception:
+                    logger.exception("Real-time assembly failed (falling back to batch)")
+                    person = None
+                if person is not None:
+                    try:
+                        with sql_session_factory() as session:
+                            upsert_person(session, person)
+                        realtime_persons_assembled.inc()
+                        logger.info(
+                            "[realtime] assembled passport={} fullname={}",
+                            person["passport"],
+                            person["fullname"],
+                        )
+                    except Exception:
+                        logger.exception("Real-time upsert to Postgres failed")
+
+            if stop:
+                break
+    finally:
+        consumer.close()
+        mongo_client.close()
+        sql_engine.dispose()
+        try:
+            redis_client.close()
+        except Exception:
+            pass
+        logger.info("Consumer closed")
 
 
 if __name__ == "__main__":
-    run_consumer()
+    run()

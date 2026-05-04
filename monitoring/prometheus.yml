@@ -1,7 +1,16 @@
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: "talent-vault"
+  - job_name: "talent-vault-api"
     static_configs:
-      - targets: ["app:8000"]
+      - targets: ["api:8000"]
+        labels:
+          component: "api"
+
+  - job_name: "talent-vault-app"
+    static_configs:
+      - targets: ["app:9100"]
+        labels:
+          component: "pipeline"

@@ -8,5 +8,10 @@ __pycache__/
 dist/
 build/
 node_modules/
+.vite/
+frontend/dist/
 .DS_Store
 logs/
+*.tsbuildinfo
+frontend/vite.config.d.ts
+frontend/vite.config.js

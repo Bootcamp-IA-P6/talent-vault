@@ -1,92 +1,120 @@
-from fastapi import APIRouter, HTTPException, Query
-from src.storage.sql_client import get_connection
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import desc, func, select
+from sqlalchemy.orm import Session
 
-router = APIRouter(prefix="/persons", tags=["Persons"])
+from src.api.dependencies import get_session
+from src.models.sql_models import Person
 
-
-def fetch_all(sql: str, params: tuple = ()):
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            cols = [desc[0] for desc in cur.description]
-            rows = cur.fetchall()
-    return [dict(zip(cols, row)) for row in rows]
+router = APIRouter()
 
 
-def fetch_one(sql: str, params: tuple = ()):
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            cols = [desc[0] for desc in cur.description]
-            row  = cur.fetchone()
-    if not row:
-        return None
-    return dict(zip(cols, row))
-
-
-# ─── Endpoints ────────────────────────────────────────
-
-@router.get("/")
+@router.get("/persons")
 def list_persons(
-    limit:  int = Query(20, ge=1, le=200, description="Número de resultados"),
-    offset: int = Query(0,  ge=0,          description="Desplazamiento")
-):
-    """Lista paginada de personas."""
-    rows = fetch_all(
-        "SELECT * FROM persons ORDER BY id LIMIT %s OFFSET %s",
-        (limit, offset)
-    )
-    return {"total": len(rows), "limit": limit, "offset": offset, "data": rows}
-
-
-@router.get("/search")
-def search_persons(
-    name:    str = Query(None, description="Buscar por nombre o apellido"),
-    city:    str = Query(None, description="Buscar por ciudad"),
-    company: str = Query(None, description="Buscar por empresa"),
-    job:     str = Query(None, description="Buscar por puesto")
-):
-    """Búsqueda flexible por nombre, ciudad, empresa o puesto."""
-    filters, params = [], []
-
-    if name:
-        filters.append("(name ILIKE %s OR last_name ILIKE %s)")
-        params += [f"%{name}%", f"%{name}%"]
+    city: str | None = Query(None),
+    company: str | None = Query(None),
+    search: str | None = Query(
+        None,
+        description="Substring match on passport, name, last_name, fullname or email (case-insensitive)",
+    ),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    session: Session = Depends(get_session),
+) -> dict:
+    stmt = select(Person)
     if city:
-        filters.append("city ILIKE %s")
-        params.append(f"%{city}%")
+        stmt = stmt.where(Person.city == city)
     if company:
-        filters.append("company ILIKE %s")
-        params.append(f"%{company}%")
-    if job:
-        filters.append("job ILIKE %s")
-        params.append(f"%{job}%")
+        stmt = stmt.where(Person.company == company)
+    if search:
+        like = f"%{search}%"
+        stmt = stmt.where(
+            Person.passport.ilike(like)
+            | Person.name.ilike(like)
+            | Person.last_name.ilike(like)
+            | Person.fullname.ilike(like)
+            | Person.email.ilike(like)
+        )
 
-    where = ("WHERE " + " AND ".join(filters)) if filters else ""
-    rows  = fetch_all(f"SELECT * FROM persons {where} LIMIT 100", tuple(params))
-    return {"total": len(rows), "data": rows}
-
-
-@router.get("/stats")
-def stats():
-    """Estadísticas generales de la base de datos."""
-    total     = fetch_one("SELECT COUNT(*) AS total FROM persons")
-    by_sex    = fetch_all("SELECT sex, COUNT(*) AS count FROM persons GROUP BY sex ORDER BY count DESC")
-    top_cities = fetch_all("SELECT city, COUNT(*) AS count FROM persons GROUP BY city ORDER BY count DESC LIMIT 5")
-    top_jobs  = fetch_all("SELECT job, COUNT(*) AS count FROM persons GROUP BY job ORDER BY count DESC LIMIT 5")
+    total = session.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = session.scalars(stmt.limit(limit).offset(offset)).all()
 
     return {
-        "total_persons": total["total"],
-        "by_sex":        by_sex,
-        "top_cities":    top_cities,
-        "top_jobs":      top_jobs
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": [_serialize(p) for p in rows],
     }
 
 
-@router.get("/{passport}")
-def get_person(passport: str):
-    """Obtiene el perfil completo de una persona por su passport."""
-    person = fetch_one("SELECT * FROM persons WHERE passport = %s", (passport,))
-    if not person:
-        raise HTTPException(status_code=404, detail=f"Persona con passport '{passport}' no encontrada")
-    return person
+@router.get("/persons/{passport}")
+def get_person(passport: str, session: Session = Depends(get_session)) -> dict:
+    person = session.get(Person, passport)
+    if person is None:
+        raise HTTPException(status_code=404, detail="Person not found")
+    return _serialize(person)
+
+
+@router.get("/stats")
+def stats(session: Session = Depends(get_session)) -> dict:
+    total = session.scalar(select(func.count()).select_from(Person)) or 0
+
+    by_city = session.execute(
+        select(Person.city, func.count().label("c"))
+        .where(Person.city.is_not(None))
+        .group_by(Person.city)
+        .order_by(desc("c"))
+        .limit(10)
+    ).all()
+
+    by_company = session.execute(
+        select(Person.company, func.count().label("c"))
+        .where(Person.company.is_not(None))
+        .group_by(Person.company)
+        .order_by(desc("c"))
+        .limit(10)
+    ).all()
+
+    by_job = session.execute(
+        select(Person.job, func.count().label("c"))
+        .where(Person.job.is_not(None))
+        .group_by(Person.job)
+        .order_by(desc("c"))
+        .limit(10)
+    ).all()
+
+    by_sex = session.execute(
+        select(Person.sex, func.count().label("c"))
+        .where(Person.sex.is_not(None))
+        .group_by(Person.sex)
+        .order_by(desc("c"))
+    ).all()
+
+    return {
+        "total_persons": total,
+        "top_cities": [{"city": c, "count": n} for c, n in by_city],
+        "top_companies": [{"company": c, "count": n} for c, n in by_company],
+        "top_jobs": [{"job": j, "count": n} for j, n in by_job],
+        "sex_distribution": [{"sex": s, "count": n} for s, n in by_sex],
+    }
+
+
+def _serialize(person: Person) -> dict:
+    return {
+        "passport": person.passport,
+        "name": person.name,
+        "last_name": person.last_name,
+        "fullname": person.fullname,
+        "email": person.email,
+        "telfnumber": person.telfnumber,
+        "sex": person.sex,
+        "IBAN": person.IBAN,
+        "salary": person.salary,
+        "company": person.company,
+        "company_address": person.company_address,
+        "company_email": person.company_email,
+        "company_telfnumber": person.company_telfnumber,
+        "job": person.job,
+        "city": person.city,
+        "address": person.address,
+        "IPv4": person.IPv4,
+    }

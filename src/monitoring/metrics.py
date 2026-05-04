@@ -1,63 +1,115 @@
-from prometheus_client import Counter, Histogram, Gauge
+"""Prometheus metrics for the Talent Vault pipeline.
 
-# ─── Consumer ─────────────────────────────────────────
+All metric objects are module-level singletons so they accumulate across the
+lifetime of the process. They are scraped from two HTTP endpoints:
 
-MESSAGES_CONSUMED = Counter(
-    "kafka_messages_consumed_total",
-    "Total de mensajes consumidos desde Kafka",
-    ["doc_type"]
+- The API container exposes them at GET /metrics (FastAPI route).
+- The app container (consumer + ETL loop) exposes them on a dedicated HTTP
+  server started from src/main.py via start_metrics_server().
+"""
+
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
+
+# ---- Kafka consumer ----
+
+kafka_messages_consumed = Counter(
+    "talent_vault_kafka_messages_consumed_total",
+    "Kafka messages consumed by the app, labelled by classified type.",
+    ["type"],
 )
 
-MESSAGES_UNKNOWN = Counter(
-    "kafka_messages_unknown_total",
-    "Total de mensajes no clasificados"
+# ---- Aggregator (Mongo raw -> Mongo persons) ----
+
+aggregate_runs = Counter(
+    "talent_vault_aggregate_runs_total",
+    "Number of aggregator passes.",
+    ["mode"],  # batch | window
 )
 
-BATCH_FLUSHED = Counter(
-    "redis_batch_flushed_total",
-    "Total de batches volcados de Redis a MongoDB",
-    ["doc_type"]
+aggregate_duration_seconds = Histogram(
+    "talent_vault_aggregate_duration_seconds",
+    "Time spent in a single aggregator pass.",
+    ["mode"],
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
 )
 
-BATCH_FLUSH_DURATION = Histogram(
-    "redis_batch_flush_duration_seconds",
-    "Tiempo en volcar un batch de Redis a MongoDB",
-    ["doc_type"]
+aggregate_persons_inserted = Counter(
+    "talent_vault_aggregate_persons_inserted_total",
+    "Persons inserted into the MongoDB persons collection.",
 )
 
-REDIS_CACHE_SIZE = Gauge(
-    "redis_cache_size",
-    "Mensajes actualmente en caché de Redis por tipo",
-    ["doc_type"]
+aggregate_persons_skipped = Counter(
+    "talent_vault_aggregate_persons_skipped_total",
+    "Personals skipped during aggregation (e.g. missing passport).",
 )
 
-# ─── Transformer ──────────────────────────────────────
-
-PERSONS_PROCESSED = Counter(
-    "transformer_persons_processed_total",
-    "Total de personas procesadas por el transformer"
+aggregate_duplicates = Counter(
+    "talent_vault_aggregate_duplicates_total",
+    "Personals dropped because the unified person already existed in Mongo.",
 )
 
-PERSONS_SKIPPED = Counter(
-    "transformer_persons_skipped_total",
-    "Total de personas omitidas por datos incompletos"
+# ---- SQL loader (Mongo persons -> Postgres) ----
+
+sql_sync_runs = Counter(
+    "talent_vault_sql_sync_runs_total",
+    "Number of Mongo->Postgres sync runs.",
 )
 
-TRANSFORMER_DURATION = Histogram(
-    "transformer_run_duration_seconds",
-    "Tiempo total de ejecución del transformer"
+sql_sync_duration_seconds = Histogram(
+    "talent_vault_sql_sync_duration_seconds",
+    "Time spent syncing Mongo persons to Postgres.",
+    buckets=(0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
 )
 
-# ─── API ──────────────────────────────────────────────
-
-API_REQUESTS = Counter(
-    "api_requests_total",
-    "Total de peticiones a la API",
-    ["method", "endpoint", "status_code"]
+sql_persons_synced = Counter(
+    "talent_vault_sql_persons_synced_total",
+    "Persons upserted into Postgres.",
 )
 
-API_LATENCY = Histogram(
-    "api_request_duration_seconds",
-    "Latencia de las peticiones a la API",
-    ["endpoint"]
+# ---- Pipeline loop ----
+
+pipeline_tick_duration_seconds = Histogram(
+    "talent_vault_pipeline_tick_duration_seconds",
+    "Time spent in one pipeline tick (aggregate window + optional sql sync).",
 )
+
+pipeline_last_inserted = Gauge(
+    "talent_vault_pipeline_last_window_inserted",
+    "Persons inserted by the most recent windowed aggregation pass.",
+)
+
+# ---- Real-time assembly via Redis ----
+
+realtime_assembly_attempts = Counter(
+    "talent_vault_realtime_assembly_attempts_total",
+    "Personals seen by the consumer that triggered a real-time assembly attempt.",
+)
+
+realtime_persons_assembled = Counter(
+    "talent_vault_realtime_persons_assembled_total",
+    "Persons assembled in real time and upserted directly into Postgres.",
+)
+
+# ---- API ----
+
+api_requests_total = Counter(
+    "talent_vault_api_requests_total",
+    "API requests received, labelled by method, path template and status code.",
+    ["method", "path", "status"],
+)
+
+api_request_duration_seconds = Histogram(
+    "talent_vault_api_request_duration_seconds",
+    "API request latency, labelled by method and path template.",
+    ["method", "path"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5),
+)
+
+
+def start_metrics_server(port: int = 9100) -> None:
+    """Start an HTTP server exposing the metrics on /metrics.
+
+    Used by the app container, which runs background workers and therefore
+    does not have an HTTP framework of its own.
+    """
+    start_http_server(port)

@@ -1,100 +1,159 @@
 services:
-  app:
-    build: .
-    container_name: talent-vault-app
-    command: uv run python -m src.main
-    ports:
-      - "8000:8000"
-    env_file:
-      - .env
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
     environment:
-      # Sobrescribe los hosts para que apunten a los contenedores
-      MONGO_HOST: mongodb
-      POSTGRES_HOST: postgres
-      REDIS_HOST: redis
-      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - 22181:2181
+
+  kafka:
+    container_name: kafka
+    image: confluentinc/cp-kafka:7.5.0
     depends_on:
-      mongodb:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    volumes:
-      - ./src:/app/src
-      - ./logs:/app/logs
-    networks:
-      - talent-network
-    restart: unless-stopped
+      - zookeeper
+    ports:
+      - 29092:29092
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  app:
+    container_name: app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    expose:
+      - "9100"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      KAFKA_TOPIC: testing
+      KAFKA_GROUP_ID: talent-vault-consumer
+      MONGO_HOST: mongodb
+      MONGO_PORT: 27017
+      MONGO_USER: ${MONGO_USER:-admin}
+      MONGO_PASSWORD: ${MONGO_PASSWORD:-admin}
+      MONGO_DB: talent_vault_raw
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-talent_vault}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      - kafka
+      - mongodb
+      - postgres
+      - redis
+    restart: always
+
+  api:
+    container_name: api
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - 8000:8000
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-admin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-talent_vault}
+    depends_on:
+      - postgres
+    restart: always
+
+  frontend:
+    container_name: frontend
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    ports:
+      - 8501:8501
+    depends_on:
+      - api
+    restart: always
+
+  random_generator:
+    container_name: random_generator
+    build:
+      context: .
+      dockerfile: datagen/Dockerfile
+    depends_on:
+      - kafka
+    restart: always
 
   mongodb:
+    container_name: mongodb
     image: mongo:7
-    container_name: talent-vault-mongo
     ports:
-      - "${MONGO_PORT:-27017}:27017"
+      - 27017:27017
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER:-admin}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-admin}
     volumes:
-      - mongo-data:/data/db
-    networks:
-      - talent-network
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+      - mongo_data:/data/db
 
   postgres:
+    container_name: postgres
     image: postgres:16
-    container_name: talent-vault-postgres
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - 5433:5432
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-talent_vault}
       POSTGRES_USER: ${POSTGRES_USER:-admin}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-admin}
+      POSTGRES_DB: ${POSTGRES_DB:-talent_vault}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - talent-network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-admin} -d ${POSTGRES_DB:-talent_vault}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+      - postgres_data:/var/lib/postgresql/data
 
   redis:
-    image: redis:7
-    container_name: talent-vault-redis
+    container_name: redis
+    image: redis:7-alpine
     ports:
-      - "${REDIS_PORT:-6379}:6379"
-    networks:
-      - talent-network
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: unless-stopped
+      - 6379:6379
+    volumes:
+      - redis_data:/data
+    restart: always
+
+  mongo-express:
+    container_name: mongo-express
+    image: mongo-express:1
+    ports:
+      - 8081:8081
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_USER:-admin}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_PASSWORD:-admin}
+      ME_CONFIG_MONGODB_SERVER: mongodb
+      ME_CONFIG_BASICAUTH: "false"
+    depends_on:
+      - mongodb
+    restart: always
 
   prometheus:
-    image: prom/prometheus
-    container_name: talent-vault-prometheus
+    container_name: prometheus
+    image: prom/prometheus:v2.54.1
     ports:
-      - "9090:9090"
+      - 9090:9090
     volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
-    networks:
-      - talent-network
-    restart: unless-stopped
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      - api
+      - app
+    restart: always
 
 volumes:
-  mongo-data:
-  postgres-data:
-
-networks:
-  talent-network:
-    external: true
+  mongo_data:
+  postgres_data:
+  prometheus_data:
+  redis_data:

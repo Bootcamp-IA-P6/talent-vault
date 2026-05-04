@@ -1,9 +1,10 @@
-FROM python:3
+FROM python:3.12-slim
 
-WORKDIR /usr/src/app
+WORKDIR /app
 
-COPY . .
+COPY pyproject.toml uv.lock* ./
+RUN pip install uv && uv sync --frozen
 
-RUN pip install -r requirements.txt
+COPY datagen/ ./datagen/
 
-CMD [ "python", "./kafka_push.py" ]
+CMD ["uv", "run", "python", "datagen/kafka_push.py"]
